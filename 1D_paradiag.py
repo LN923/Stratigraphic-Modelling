@@ -1,0 +1,291 @@
+import asQ
+from firedrake import *
+import matplotlib.pyplot as plt
+from firedrake.petsc import PETSc
+from utils.timing import SolverTimer
+import os
+from argparse import ArgumentParser
+# Create mesh and define function space
+
+parser = ArgumentParser(
+    description='ParaDiag timestepping for scalar advection of a Gaussian bump in a periodic square with DG in space and implicit-theta in time.',
+    epilog="""\
+Optional PETSc command line arguments:
+
+   -circulant_alpha :float: The circulant parameter to use in the preconditioner. Default 1e-4.
+   -ksp_rtol :float: The relative residual drop required for convergence. Default 1e-11.
+                     See https://petsc.org/release/manualpages/KSP/KSPSetTolerances/
+   -ksp_type :str: The Krylov method to use for the all-at-once iterations. Default 'richardson'.
+                   Alternatives include gmres or fgmres.
+                   See https://petsc.org/release/manualpages/KSP/KSPSetType/
+""",
+)
+parser.add_argument('--nx', type=int, default=100, help='Number of cells along each side of the square.')
+parser.add_argument('--a' , type=float, default=0.1, help='Residual Added Diffusion coefficient.')
+parser.add_argument('--b', type=float, default=5, help='Residual Added Diffusion coefficient for h')
+#parser.add_argument('--cfl', type=float, default=0.8, help='Convective CFL number.')
+#parser.add_argument('--angle', type=float, default=pi/6, help='Angle of the convective velocity to the horizontal.')
+parser.add_argument('--dt', type=float, default=4*1e-5, help='Degree of the scalar space.')
+#parser.add_argument('--theta', type=float, default=0.5, help='Parameter for the implicit theta timestepping method.')
+#parser.add_argument('--width', type=float, default=0.2, help='Width of the Gaussian bump.')
+parser.add_argument('--nwindows', type=int, default=1, help='Number of time-windows to solve.')
+parser.add_argument('--nslices', type=int, default=1, help='Number of time-slices in the all-at-once system. Must divide the number of MPI ranks exactly.')
+parser.add_argument('--slicelength', type=int, default=1, help='Number of timesteps per time-slice. Total number of timesteps in the all-at-once system is nslices*slice_length.')
+#parser.add_argument('--metrics_dir', type=str, default='metrics/advection', help='Directory to save paradiag output metrics to.')
+parser.add_argument('--show_args', action='store_true', help='Print all the arguments when the script starts.')
+
+args = parser.parse_known_args()
+args = args[0]
+
+if args.show_args:
+    PETSc.Sys.Print(args)
+
+time_partition = tuple(args.slicelength for _ in range(args.nslices))
+ensemble = asQ.create_ensemble(time_partition)
+window_length = sum(time_partition)
+nwindows = args.nwindows
+nsteps = nwindows*window_length
+
+dt = args.dt
+Dt = Constant(dt)
+
+n = args.nx
+mesh = IntervalMesh(n, 1, comm=ensemble.comm)
+h_const = Constant(1/n)
+
+V = FunctionSpace(mesh, "CG", 2)
+W = MixedFunctionSpace((V, V))
+
+w0 = Function(W)
+u0, s0 = w0.subfunctions
+
+x, = SpatialCoordinate(mesh)
+
+u0.interpolate(0)
+s0.interpolate(0)
+
+b = Function(V)
+
+def D(d): 
+  return (0.2/sqrt(2*pi))*exp(-((d-5)/10)**2/2)
+
+def l(d):
+  r = conditional(d>0, exp(-d/10)/(1 + exp(-50*d)), exp(50*d - d/10)/(exp(50*d) + 1))
+  return 2000*r
+
+def D_tilde(d, u, s, h):
+   return sqrt((D(d)**2) + args.a*(h**args.b)*(((s - div(D(d)*grad(u)) - l(d))**2)))
+
+
+p, q = TestFunctions(W)
+w1 = Function(W)
+w1.assign(w0)
+
+
+b.interpolate(100*tanh(5*x-5/2))
+
+
+def form_mass(u, s, q, p):
+    return q*u*dx + p*s*dx
+
+def form_function(u, s, q, p, t):
+   return (D_tilde(sin(2*pi*t) - b - u, u, s, h_const)*u.dx(0)*q.dx(0) - q*l(sin(2*pi*t) - b - u))*dx(degree = 2) - s*p*dx
+#L = (
+#(q*(u1 - u0) + Dt*(D(sin(2*pi*time) - b - uh)*uh.dx(0)*q.dx(0) - q*l(sin(2*pi*time) - b - uh)))*dx +
+##(p*(u1 - u0) - Dt*sh*p)*dx
+#
+
+
+parameter_safe ={'mat_type': 'aij',
+    'ksp_type': 'preonly',
+    'pc_type': 'lu'}
+
+parameter = {'mat_type': 'aij',
+    'ksp_type': 'gmres',
+    'ksp_atol': 1e-50,
+    'ksp_rtol': 1e-6,
+    'snes_stol': 1e-50,
+    'snes_atol' :1e-6,
+    'pc_type': 'fieldsplit',
+    'pc_fieldsplit_type':'additive',
+    'fieldsplit_0_pc_type' :'lu',
+    'fieldsplit_1_pc_type' :'lu',
+    'ksp_converged_reason': None,
+    'snes_converged_reason': None,}
+
+parameter_patch = {                                                                  
+    #"snes_monitor": None,                                                       
+    #"snes_converged_reason": None,                                              
+    "snes_atol": 1e-50,                                                         
+    "snes_stol": 1e-50,                                                         
+    #"ksp_monitor": None,                                                        
+    #"ksp_converged_rate": None,                                                 
+    "ksp_type": "gmres",                                                        
+    "ksp_rtol": 1e-6,                                                           
+    "ksp_max_it": 40,                                                           
+    "pc_type": "python",
+    "pc_python_type": "firedrake.PatchPC",                                      
+    "patch_pc_patch_save_operators": True,                                      
+    "patch_pc_patch_partition_of_unity": True,                                  
+    "patch_pc_patch_sub_mat_type": "seqdense",                                  
+    "patch_pc_patch_construct_dim": 0,                                          
+    "patch_pc_patch_construct_type": "star",
+    "patch_pc_patch_local_type": "additive",                                    
+    "patch_pc_patch_precompute_element_tensors": True,                          
+    "patch_pc_patch_symmetrise_sweep": False,                                   
+    "patch_sub_ksp_type": "preonly",                                            
+    "patch_sub_pc_type": "lu",                                                  
+    "patch_sub_pc_factor_shift_type": "nonzero"                                 
+}
+
+block_parameter = {"ksp_type": "gmres",                                                        
+    "ksp_rtol": 1e-6,                                                           
+    "ksp_max_it": 40,                                                           
+    "pc_type": "python",
+    "pc_python_type": "firedrake.PatchPC",                                      
+    "patch_pc_patch_save_operators": True,                                      
+    "patch_pc_patch_partition_of_unity": True,                                  
+    "patch_pc_patch_sub_mat_type": "seqdense",                                  
+    "patch_pc_patch_construct_dim": 0,                                          
+    "patch_pc_patch_construct_type": "star",
+    "patch_pc_patch_local_type": "additive",                                    
+    "patch_pc_patch_precompute_element_tensors": True,                          
+    "patch_pc_patch_symmetrise_sweep": False,                                   
+    "patch_sub_ksp_type": "preonly",                                         
+    "patch_sub_pc_type": "lu",                                                  
+    "patch_sub_pc_factor_shift_type": "nonzero"}
+
+parameter_paradiag = {                                                                  
+    #"snes_monitor": None,                                                       
+    "snes_converged_reason": None,                                              
+    "snes_atol": 1e-50,                                                         
+    "snes_stol": 1e-50,
+    "snes_ksp_ew": None,  
+    "snes_linesearch_type": "basic",
+    #"snes_rtolmax": 0.7,                                           
+    #"ksp_monitor": None,                                                      
+    "ksp_converged_reason": None,                                                 
+    "ksp_type": "fgmres",                                                        
+    "ksp_rtol": 1e-6,                                                         
+    "ksp_max_it": 40,                                                           
+    "pc_type": "python",
+    "pc_python_type":'asQ.CirculantPC',
+    'circulant_alpha': 1e-4,
+    'circulant_block': block_parameter  
+}
+
+# Create a file to write the solution to
+#try:
+    #ufile = VTKFile('1d_paradiag_u200.pvd', ensemble.comm)
+#except FileExistsError:
+    # the dir already exists
+    # put code handing this case here
+    #pass
+
+paradiag = asQ.Paradiag(ensemble=ensemble,
+                   form_function=form_function,
+                   form_mass=form_mass,
+                   ics=w0, dt=dt, theta=0.5,
+                   time_partition=time_partition,
+                   solver_parameters=parameter_paradiag)
+
+timer = SolverTimer()
+
+
+# This function will be called before paradiag solves each time-window. We can use
+# this to make the output a bit easier to read, and to time the window calculation
+def window_preproc(paradiag, wndw, rhs):
+    PETSc.Sys.Print(f'### === --- Calculating time-window {wndw} --- === ###')
+    PETSc.Sys.Print('')
+    # for now we are interested in timing only the solve, this
+    # makes sure we don't time any synchronisation after prints.
+    with PETSc.Log.Event("window_preproc.Coll_Barrier"):
+        paradiag.ensemble.ensemble_comm.Barrier()
+    timer.start_timing()
+
+#is_last_slice = paradiag.layout.is_local(-1)
+
+# Make an output Function on the last time-slice and start a snapshot list
+#if is_last_slice:
+    #uout = Function(V)
+    #uout = w0.subfunctions[0]
+    #ufile.write(uout, time=0)
+
+# This function will be called after paradiag solves each time-window. We can use
+# this to finish the window calculation timing and print the result.
+def window_postproc(paradiag, wndw, rhs):
+    timer.stop_timing()
+    PETSc.Sys.Print('')
+    PETSc.Sys.Print(f'Window solution time: {round(timer.times[-1], 5)}')
+    PETSc.Sys.Print('')
+    #if wndw % 100 == 0:
+        #if is_last_slice:
+        # The aaofunc is the AllAtOnceFunction which represents the time-series.
+        # indexing the AllAtOnceFunction accesses one timestep on the local slice.
+        # -1 is again used to get the last timestep and place it in qout.
+            #uout.assign(paradiag.aaofunc[-1].subfunctions[0])
+            #ufile.write(uout, time=paradiag.aaoform.time[-1])
+
+
+# Setup all solver objects. The firedrake DM and options management
+# makes it difficult to setup some preconditioners without actually
+# calling `solve`, so we just run once to set everything up.
+PETSc.Sys.Print('')
+PETSc.Sys.Print('### === --- Setting up solver and prefactoring --- === ###')
+PETSc.Sys.Print('')
+with PETSc.Log.Event("warmup_solve"):
+    paradiag.solve(1)
+PETSc.Sys.Print('')
+
+# reset solution and iteration counts for timed solved
+paradiag.reset_diagnostics()
+aaofunc = paradiag.solver.aaofunc
+aaofunc.bcast_field(-1, aaofunc.initial_condition)
+aaofunc.assign(aaofunc.initial_condition)
+
+PETSc.Sys.Print('### === --- Solving timeseries --- === ###')
+PETSc.Sys.Print('')
+
+# Solve nwindows of the all-at-once system
+with PETSc.Log.Event("timed_solves"):
+    paradiag.solve(nwindows,
+                   preproc=window_preproc,
+                   postproc=window_postproc)
+    
+
+PETSc.Sys.Print('### === --- Iteration and timing results --- === ###')
+PETSc.Sys.Print('')
+
+# Write out the convergence statistics to a file
+#os.makedirs('2d_paradiag_convergestats/meshsize{n}'.format(n=n), exist_ok=True)
+#asQ.write_paradiag_metrics(paradiag, directory='2d_paradiag_convergestats/meshsize{n}'.format(n=n))
+
+nw = paradiag.total_windows
+nt = paradiag.total_timesteps
+PETSc.Sys.Print(f'Total windows: {nw}')
+PETSc.Sys.Print(f'Total timesteps: {nt}')
+PETSc.Sys.Print('')
+
+
+# paradiag collects a few iteration counts for us
+lits = paradiag.linear_iterations
+nlits = paradiag.nonlinear_iterations
+blits = paradiag.block_iterations.data()
+
+# Number of nonlinear iterations will be 1 per window for linear problems
+PETSc.Sys.Print(f'Nonlinear iterations: {str(nlits).rjust(5)}  |  Iterations per window: {str(nlits/nw).rjust(5)}')
+
+# Number of linear iterations of the all-at-once system, total and per window.
+PETSc.Sys.Print(f'Linear iterations:    {str(lits).rjust(5)}  |  Iterations per window: {str(lits/nw).rjust(5)}')
+
+# Number of iterations needed for each block in step-(b), total and per block solve
+PETSc.Sys.Print(f'Total block linear iterations: {blits}')
+PETSc.Sys.Print(f'Maximum block solve iterations: {max(blits)}')
+PETSc.Sys.Print(f'Maximum Iterations per timestep: {max(blits)/nt}')
+PETSc.Sys.Print(f'Iterations per block solve: {blits/lits}')
+PETSc.Sys.Print('')
+
+# Timing measurements
+PETSc.Sys.Print(timer.string(timesteps_per_solve=4,
+                             total_iterations=paradiag.linear_iterations, ndigits=5))
+PETSc.Sys.Print('')
