@@ -1,6 +1,6 @@
 # Time-Parallel Methods for Stratigraphic Forward Models
 
-This repository contains code and documentation for implementing and testing time-parallel methods (ParaDiag II) on a stratigraphic forward model in cothe the 1-Dimensional and 2-Dimensional case.
+This repository contains code and documentation for implementing and testing time-parallel methods (ParaDiag II) on a stratigraphic forward model in both the 1-Dimensional and 2-Dimensional case.
 
 # Dependencies
 
