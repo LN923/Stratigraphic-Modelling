@@ -101,31 +101,6 @@ parameter = {'mat_type': 'aij',
     'ksp_converged_reason': None,
     'snes_converged_reason': None,}
 
-parameter_patch = {                                                                  
-    #"snes_monitor": None,                                                       
-    #"snes_converged_reason": None,                                              
-    "snes_atol": 1e-50,                                                         
-    "snes_stol": 1e-50,                                                         
-    #"ksp_monitor": None,                                                        
-    #"ksp_converged_rate": None,                                                 
-    "ksp_type": "gmres",                                                        
-    "ksp_rtol": 1e-6,                                                           
-    "ksp_max_it": 40,                                                           
-    "pc_type": "python",
-    "pc_python_type": "firedrake.PatchPC",                                      
-    "patch_pc_patch_save_operators": True,                                      
-    "patch_pc_patch_partition_of_unity": True,                                  
-    "patch_pc_patch_sub_mat_type": "seqdense",                                  
-    "patch_pc_patch_construct_dim": 0,                                          
-    "patch_pc_patch_construct_type": "star",
-    "patch_pc_patch_local_type": "additive",                                    
-    "patch_pc_patch_precompute_element_tensors": True,                          
-    "patch_pc_patch_symmetrise_sweep": False,                                   
-    "patch_sub_ksp_type": "preonly",                                            
-    "patch_sub_pc_type": "lu",                                                  
-    "patch_sub_pc_factor_shift_type": "nonzero"                                 
-}
-
 block_parameter = {"ksp_type": "gmres",                                                        
     "ksp_rtol": 1e-6,                                                           
     "ksp_max_it": 40,                                                           
