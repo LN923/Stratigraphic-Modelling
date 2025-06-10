@@ -10,7 +10,7 @@ from utils import diagnostics
 # Create mesh and define function space
 
 parser = ArgumentParser(
-    description='ParaDiag timestepping 2D Stratigraphic Model.',
+    description='Serial timestepping 2D Stratigraphic Model.',
     epilog="""\
 Optional PETSc command line arguments:
 
