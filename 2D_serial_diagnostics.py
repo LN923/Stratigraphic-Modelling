@@ -199,7 +199,7 @@ parameter_serial = {
     "ksp_rtol": 1e-6,                                                         
     "ksp_max_it": 40                                                            
 }
-parameter_serial.update(block_parameter)
+parameter_serial.update(block_parameters)
 
 # Create a file to write the solution to
 #try:
