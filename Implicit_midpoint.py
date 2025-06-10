@@ -135,11 +135,6 @@ for step in ProgressBar("timestep").iter(range(nsteps)):
    usolver.solve()
    w0.assign(w1)
 
-# Finally, we check if it is time to dump the data. The function will be appended
-# to the array of functions to be plotted later::
-
-
-#
    dumpn += 1
    if dumpn == ndump:
       dumpn -= ndump
