@@ -8,30 +8,20 @@ from argparse import ArgumentParser
 # Create mesh and define function space
 
 parser = ArgumentParser(
-    description='ParaDiag timestepping for scalar advection of a Gaussian bump in a periodic square with DG in space and implicit-theta in time.',
+    description='ParaDiag timestepping for 1D Stratigraphic Model',
     epilog="""\
 Optional PETSc command line arguments:
 
    -circulant_alpha :float: The circulant parameter to use in the preconditioner. Default 1e-4.
-   -ksp_rtol :float: The relative residual drop required for convergence. Default 1e-11.
-                     See https://petsc.org/release/manualpages/KSP/KSPSetTolerances/
-   -ksp_type :str: The Krylov method to use for the all-at-once iterations. Default 'richardson'.
-                   Alternatives include gmres or fgmres.
-                   See https://petsc.org/release/manualpages/KSP/KSPSetType/
 """,
 )
 parser.add_argument('--nx', type=int, default=100, help='Number of cells along each side of the square.')
 parser.add_argument('--a' , type=float, default=0.1, help='Residual Added Diffusion coefficient.')
-parser.add_argument('--b', type=float, default=5, help='Residual Added Diffusion coefficient for h')
-#parser.add_argument('--cfl', type=float, default=0.8, help='Convective CFL number.')
-#parser.add_argument('--angle', type=float, default=pi/6, help='Angle of the convective velocity to the horizontal.')
+parser.add_argument('--beta', type=float, default=5, help='Residual Added Diffusion coefficient for h')
 parser.add_argument('--dt', type=float, default=4*1e-5, help='Degree of the scalar space.')
-#parser.add_argument('--theta', type=float, default=0.5, help='Parameter for the implicit theta timestepping method.')
-#parser.add_argument('--width', type=float, default=0.2, help='Width of the Gaussian bump.')
 parser.add_argument('--nwindows', type=int, default=1, help='Number of time-windows to solve.')
 parser.add_argument('--nslices', type=int, default=1, help='Number of time-slices in the all-at-once system. Must divide the number of MPI ranks exactly.')
 parser.add_argument('--slicelength', type=int, default=1, help='Number of timesteps per time-slice. Total number of timesteps in the all-at-once system is nslices*slice_length.')
-#parser.add_argument('--metrics_dir', type=str, default='metrics/advection', help='Directory to save paradiag output metrics to.')
 parser.add_argument('--show_args', action='store_true', help='Print all the arguments when the script starts.')
 
 args = parser.parse_known_args()
@@ -74,7 +64,7 @@ def l(d):
   return 2000*r
 
 def D_tilde(d, u, s, h):
-   return sqrt((D(d)**2) + args.a*(h**args.b)*(((s - div(D(d)*grad(u)) - l(d))**2)))
+   return sqrt((D(d)**2) + args.a*(h**args.beta)*(((s - div(D(d)*grad(u)) - l(d))**2)))
 
 
 p, q = TestFunctions(W)
@@ -90,11 +80,6 @@ def form_mass(u, s, q, p):
 
 def form_function(u, s, q, p, t):
    return (D_tilde(sin(2*pi*t) - b - u, u, s, h_const)*u.dx(0)*q.dx(0) - q*l(sin(2*pi*t) - b - u))*dx(degree = 2) - s*p*dx
-#L = (
-#(q*(u1 - u0) + Dt*(D(sin(2*pi*time) - b - uh)*uh.dx(0)*q.dx(0) - q*l(sin(2*pi*time) - b - uh)))*dx +
-##(p*(u1 - u0) - Dt*sh*p)*dx
-#
-
 
 parameter_safe ={'mat_type': 'aij',
     'ksp_type': 'preonly',
@@ -138,7 +123,7 @@ parameter_patch = {
     "patch_sub_pc_factor_shift_type": "nonzero"                                 
 }
 
-block_parameter = {"ksp_type": "gmres",                                                        
+block_parameters = {"ksp_type": "gmres",                                                        
     "ksp_rtol": 1e-6,                                                           
     "ksp_max_it": 40,                                                           
     "pc_type": "python",
@@ -171,7 +156,7 @@ parameter_paradiag = {
     "pc_type": "python",
     "pc_python_type":'asQ.CirculantPC',
     'circulant_alpha': 1e-4,
-    'circulant_block': block_parameter  
+    'circulant_block': block_parameters  
 }
 
 # Create a file to write the solution to
