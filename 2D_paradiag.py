@@ -4,18 +4,37 @@ import matplotlib.pyplot as plt
 from firedrake.petsc import PETSc
 from utils.timing import SolverTimer
 import os
-# Create mesh and define function space
+from argparse import ArgumentParser
 
-time_partition = [2, 2]
+parser = ArgumentParser(description='ParaDiag timestepping for Stratigraphic Model.'
+                       epilog="""\
+Optional PETSc command line arguments: circulant_alpha :float: The circulant parameter to use in the preconditioner. Default 1e-4.)
+
+parser.add_argument('--nx', type=int, default=400, help='Number of cells along each side of the square for the coarsest mesh.')
+parser.add_argument('--dt', type=float, default=4*1e-5, help='Degree of the scalar space.')
+parser.add_argument('--nwindows', type=int, default=10, help='Number of time-windows to solve.')
+parser.add_argument('--a' , type=float, default=0.1, help='Residual Added Diffusion coefficient.')
+parser.add_argument('--beta', type=float, default=5, help='Residual Added Diffusion coefficient for h')
+parser.add_argument('--nslices', type=int, default=4, help='Number of time-slices in the all-at-once system. Must divide the number of MPI ranks exactly.')
+parser.add_argument('--slice_length', type=int, default=1, help='Number of timesteps per time-slice. Total number of timesteps in the all-at-once system is nslices*slice_length.')
+parser.add_argument('--show_args', action='store_true', help='Print all the arguments when the script starts.')
+
+args = parser.parse_known_args()
+args = args[0]
+
+if args.show_args:
+    PETSc.Sys.Print(args)
+
+time_partition = tuple(args.slice_length for _ in range(args.nslices))
 ensemble = asQ.create_ensemble(time_partition)
 window_length = sum(time_partition)
-nwindows = 50
+nwindows = args.nwindows
 nsteps = nwindows*window_length
 
-dt = 4*1e-5
+dt = args.dt
 Dt = Constant(dt)
 
-n = 8
+n = args.nx
 mesh = UnitSquareMesh(n, n, comm=ensemble.comm)
 n_ref = 4
 hierarchy = MeshHierarchy(mesh, n_ref)
@@ -36,6 +55,8 @@ u0.interpolate(0)
 s0.interpolate(0)
 
 b = Function(V)
+a = Constant(args.a)
+beta = Constant(args.beta)
 
 def D(d): 
   return (0.2/sqrt(2*pi))*exp(-((d-5)/10)**2/2)
@@ -45,7 +66,7 @@ def l(d):
   return 2000*r
 
 def D_tilde(d, u, s, h):
-   return sqrt((D(d)**2) + 0.1*(h**5)*(((s - div(D(d)*grad(u)) - l(d))**2)))
+   return sqrt((D(d)**2) + a*(h**beta)*(((s - div(D(d)*grad(u)) - l(d))**2)))
 
 
 p, q = TestFunctions(W)
@@ -104,6 +125,7 @@ parameter_patch = {
     "patch_sub_pc_type": "lu",                                                  
     "patch_sub_pc_factor_shift_type": "nonzero"                                 
 }
+
 block_parameter = {"ksp_type": "gmres",                                                        
     "ksp_rtol": 1e-6,                                                           
     "ksp_max_it": 40,                                                           
@@ -181,7 +203,7 @@ parameter_paradiag = {
     "pc_type": "python",
     "pc_python_type":'asQ.CirculantPC',
     'circulant_alpha': 1e-4,
-    'circulant_block': block_parameter                
+    'circulant_block': block_parameter               
 }
 
 
@@ -193,54 +215,7 @@ paradiag = asQ.Paradiag(ensemble=ensemble,
                    solver_parameters=parameter_paradiag)
 
 
-
-
-
-
-# Next we use the other form of :attr:`~.Function.subfunctions`, ``w0.subfunctions``,
-# which is the way to split up a Function in order to access its data
-# e.g. for output. ::
-
-m0, u0 = w0.subfunctions
-m1, u1 = w1.subfunctions
-
-# We choose a final time, and initialise a :class:`~.vtk_output.VTKFile`
-# object for storing ``u``. as well as an array for storing the function
-# to be visualised::
-
-#T = 0.001
 #ufile = VTKFile('u_pdg.pvd')
-#t =0.0
-#ufile.write(u1, time=t)
-#all_us = []
-
-# We also initialise a dump counter so we only dump every 10 timesteps. ::
-ndump = 100
-dumpn = 0
-
-# Now we enter the timeloop. ::
-#nsteps = 1000
-#dt = T/nsteps
-#Dt.assign(dt)
-"""for step in ProgressBar("timestep").iter(range(nsteps)):
-   time.assign(t + 0.5*dt)
-   t += dt
-
-   pdg.solve(20)
-   w0.assi
-   n(w1)
-
-# Finally, we check if it is time to dump the data. The function will be appended
-# to the array of functions to be plotted later::
-
-#
-   dumpn += 1
-   if dumpn == ndump:
-      dumpn -= ndump
-      ufile.write(u1, time=t)"""
-# create a timer to profile the calculations
-timer = SolverTimer()
-
 
 # This function will be called before paradiag solves each time-window. We can use
 # this to make the output a bit easier to read, and to time the window calculation
@@ -317,9 +292,12 @@ PETSc.Sys.Print(f'Linear iterations:    {str(lits).rjust(5)}  |  Iterations per 
 # Number of iterations needed for each block in step-(b), total and per block solve
 PETSc.Sys.Print(f'Total block linear iterations: {blits}')
 PETSc.Sys.Print(f'Iterations per block solve: {blits/lits}')
+TSc.Sys.Print(f'Maximum Iterations per timestep: {max(blits)/nt}')
+PETSc.Sys.Print(f'Minimum block iterations per solve: {min(blits)/lits}')
+PETSc.Sys.Print(f'Maximum block iterations per solve (kp): {max(blits)/lits}')
 PETSc.Sys.Print('')
 
 # Timing measurements
-PETSc.Sys.Print(timer.string(timesteps_per_solve=4,
+PETSc.Sys.Print(timer.string(timesteps_per_solve=window_length,
                              total_iterations=paradiag.linear_iterations, ndigits=5))
 PETSc.Sys.Print('')
