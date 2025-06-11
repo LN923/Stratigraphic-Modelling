@@ -121,7 +121,7 @@ block_parameter = {"ksp_type": "gmres",
 
 block_parameters = {
     'mat_type': 'matfree',
-    'ksp_type': 'gmres',
+    'ksp_type': 'fgmres',
     'ksp': {
         'rtol': 1e-3,
         'max_it': 30,
